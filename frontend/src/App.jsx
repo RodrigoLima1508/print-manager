@@ -8,7 +8,8 @@ import {
   LayoutDashboard, LogOut, MessageSquare, Edit3, Activity, FileUp
 } from 'lucide-react';
 
-const API = "http://localhost:3001";
+// Removi o localhost e deixe apenas o prefixo /api que configurei no server.js
+const API = "/api";
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token'));
