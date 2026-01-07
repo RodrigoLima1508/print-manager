@@ -107,11 +107,16 @@ app.post('/api/stock/import', async (req, res) => {
 
 // --- CONFIGURAÇÃO PARA O HUGGING FACE / PRODUÇÃO ---
 
-// 1. Serve arquivos estáticos da pasta dist do frontend
+// 1. Serve arquivos estáticos (CSS, JS, Imagens)
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
 
-// 2. Rota curinga ajustada para compatibilidade com Node 22 (Hugging Face)
-app.get('/:path*', (req, res) => {
+// 2. Rota "Pega-Tudo" sem caracteres especiais (Compatível com Node 22)
+app.use((req, res, next) => {
+    // Se a URL começar com /api, ele ignora e passa para as rotas acima
+    if (req.url.startsWith('/api')) {
+        return next();
+    }
+    // Para qualquer outra rota, entrega o frontend
     res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html'));
 });
 
