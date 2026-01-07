@@ -32,11 +32,15 @@ let db;
     const sExists = await db.get('SELECT * FROM estoque WHERE id = 1');
     if (!sExists) await db.run('INSERT INTO estoque (id, etiquetas, ribbons) VALUES (1, 0, 0)');
 
-    const adminExists = await db.get('SELECT * FROM users WHERE username = ?', ['admin']);
-    if (!adminExists) {
-        const hash = await bcrypt.hash('discra', 10);
-        await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
-    }
+    // Força a atualização da senha do admin toda vez que o servidor inicia
+const hash = await bcrypt.hash('discra', 10);
+const adminExists = await db.get('SELECT * FROM users WHERE username = ?', ['admin']);
+
+if (!adminExists) {
+    await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
+} else {
+    await db.run('UPDATE users SET password = ? WHERE username = ?', [hash, 'admin']);
+}
 
     // Monitoramento de Rede (Ping)
     const updateNetworkStatus = async () => {
