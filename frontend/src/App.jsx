@@ -8,8 +8,11 @@ import {
   LayoutDashboard, LogOut, MessageSquare, Edit3, Activity, FileUp
 } from 'lucide-react';
 
-// Removi o localhost e deixe apenas o prefixo /api que configurei no server.js
-const API = "/api";
+// Se o site estiver rodando em localhost, ele usa a porta do servidor.
+// Se estiver no Hugging Face, usa a rota relativa.
+const API = window.location.hostname === "localhost" 
+  ? "http://localhost:7860/api" 
+  : "/api";
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token'));
@@ -58,11 +61,12 @@ function App() {
   };
 
   // Dados do Gráfico (Restauração)
-  const chartData = [
-    { name: 'Online', value: printers.filter(p => p.online_status === 'Online').length, color: '#10b981' },
-    { name: 'Offline', value: printers.filter(p => p.online_status === 'Offline').length, color: '#ef4444' },
-    { name: 'Instável', value: printers.filter(p => p.online_status === 'Instável').length, color: '#f59e0b' },
-  ].filter(d => d.value > 0);
+  // Adicionando o "|| []" garantimos que ele sempre tenha uma lista para filtrar
+const chartData = [
+  { name: 'Online', value: (printers || []).filter(p => p.online_status === 'Online').length, color: '#10b981' },
+  { name: 'Offline', value: (printers || []).filter(p => p.online_status === 'Offline').length, color: '#ef4444' },
+  { name: 'Instável', value: (printers || []).filter(p => p.online_status === 'Instável').length, color: '#f59e0b' },
+].filter(d => d.value > 0);
 
   if (!token) return (
     <div style={loginScreenStyle}>
