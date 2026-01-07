@@ -110,8 +110,8 @@ app.post('/api/stock/import', async (req, res) => {
 // 1. Serve arquivos estáticos da pasta dist do frontend
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
 
-// 2. Rota curinga para o React (Sempre por último)
-app.get('*', (req, res) => {
+// 2. Rota curinga ajustada para compatibilidade com Node 22 (Hugging Face)
+app.get('/:path*', (req, res) => {
     res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html'));
 });
 
