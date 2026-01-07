@@ -139,4 +139,6 @@ app.post('/stock/import', async (req, res) => {
     }
 });
 
-app.listen(3001, () => console.log("🚀 Server ON: 3001"));
+// Troque o app.listen(3001...) por isso:
+const PORT = process.env.PORT || 7860;
+app.listen(PORT, '0.0.0.0', () => console.log(`Online na porta ${PORT}`));
