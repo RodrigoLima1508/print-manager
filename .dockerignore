@@ -1,0 +1,5 @@
+node_modules
+frontend/node_modules
+database.db
+database.db-journal
+.git
