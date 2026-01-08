@@ -8,8 +8,6 @@ import {
   LayoutDashboard, LogOut, MessageSquare, Edit3, Activity, FileUp
 } from 'lucide-react';
 
-// Se o site estiver rodando em localhost, ele usa a porta do servidor.
-// Se estiver no Hugging Face, usa a rota relativa.
 const API = window.location.hostname === "localhost" 
   ? "http://localhost:7860/api" 
   : "/api";
@@ -19,7 +17,6 @@ function App() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [printers, setPrinters] = useState([]);
-  const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState('dashboard');
   const [form, setForm] = useState({ model: '', ip: '', serial: '' });
   const [stockData, setStockData] = useState({ stock: { etiquetas: 0, ribbons: 0 }, logs: [] });
@@ -60,13 +57,19 @@ function App() {
     reader.readAsBinaryString(file);
   };
 
-  // Dados do Gráfico (Restauração)
-  // Adicionando o "|| []" garantimos que ele sempre tenha uma lista para filtrar
-const chartData = [
-  { name: 'Online', value: (printers || []).filter(p => p.online_status === 'Online').length, color: '#10b981' },
-  { name: 'Offline', value: (printers || []).filter(p => p.online_status === 'Offline').length, color: '#ef4444' },
-  { name: 'Instável', value: (printers || []).filter(p => p.online_status === 'Instável').length, color: '#f59e0b' },
-].filter(d => d.value > 0);
+  const chartData = [
+    { name: 'Online', value: (printers || []).filter(p => p.online_status === 'Online').length, color: '#10b981' },
+    { name: 'Offline', value: (printers || []).filter(p => p.online_status === 'Offline').length, color: '#ef4444' },
+    { name: 'Instável', value: (printers || []).filter(p => p.online_status === 'Instável').length, color: '#f59e0b' },
+  ].filter(d => d.value > 0);
+
+  // Função para máscara de data automática
+  const handleDateChange = (e) => {
+    let v = e.target.value.replace(/\D/g, '').slice(0, 8);
+    if (v.length >= 5) v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
+    else if (v.length >= 3) v = `${v.slice(0, 2)}/${v.slice(2)}`;
+    e.target.value = v;
+  };
 
   if (!token) return (
     <div style={loginScreenStyle}>
@@ -82,7 +85,6 @@ const chartData = [
 
   return (
     <div style={bodyStyle}>
-      {/* Sidebar - Preto Total */}
       <aside style={sidebarStyle}>
         <div style={logoStyle}><PrinterIcon size={24}/> PrintManager</div>
         <nav style={{flex: 1}}>
@@ -108,8 +110,6 @@ const chartData = [
                 XLSX.writeFile(wb, "Relatorio.xlsx");
               }} style={btnExcel}><Download size={18}/> Exportar Excel</button>
             </div>
-
-            {/* Seção do Gráfico */}
             <div style={topGridStyle}>
               <div style={chartCardStyle}>
                 <h4 style={{margin:0, color:'#94a3b8'}}>Status da Rede</h4>
@@ -126,8 +126,6 @@ const chartData = [
               <StatCard title="Total Equipamentos" val={printers.length} color="#6366f1" />
               <StatCard title="Status Online" val={printers.filter(p => p.online_status === 'Online').length} color="#10b981" />
             </div>
-
-            {/* Cadastro de Impressoras */}
             <div style={cardStyle}>
               <h4 style={{marginTop:0, color: '#38bdf8'}}>Adicionar Novo Equipamento</h4>
               <form onSubmit={async (e) => {
@@ -140,8 +138,6 @@ const chartData = [
                 <button type="submit" style={btnAction}>Adicionar</button>
               </form>
             </div>
-
-            {/* Tabela de Impressoras */}
             <div style={cardStyle}>
               <table style={tableStyle}>
                 <thead>
@@ -174,7 +170,7 @@ const chartData = [
         ) : (
           <div style={{ animation: 'fadeIn 0.3s' }}>
             <div style={headerStyle}>
-              <h2>Controle de Insumos</h2>
+              <h2>Controle de Estoque</h2>
               <label style={btnImport}>
                 <FileUp size={18}/> Importar Planilha <input type="file" onChange={handleFileUpload} style={{ display: 'none' }} />
               </label>
@@ -189,13 +185,79 @@ const chartData = [
                 <h2 style={{ fontSize: '42px', margin: '10px 0' }}>{stockData.stock?.ribbons || 0}</h2>
               </div>
             </div>
+
+            <div style={cardStyle}>
+                <h4 style={{marginTop:0, color: '#38bdf8'}}>Nova Movimentação Manual</h4>
+                <form onSubmit={async (e) => {
+                    e.preventDefault();
+                    const move = {
+                        tipo: e.target.tipo.value,
+                        etiquetas: parseInt(e.target.etiq.value) || 0,
+                        ribbons: parseInt(e.target.rib.value) || 0,
+                        data: e.target.data.value || new Date().toLocaleString('pt-BR'),
+                        obs: "Manual"
+                    };
+                    await axios.post(`${API}/stock/import`, { movements: [move] });
+                    loadStock();
+                    e.target.reset();
+                }} style={{display:'flex', gap:'10px', flexWrap:'wrap'}}>
+                    <select name="tipo" style={inputStyleDark} required>
+                        <option value="Entrada">Entrada</option>
+                        <option value="Saida">Saída</option>
+                    </select>
+                    <input name="etiq" type="number" placeholder="Etiquetas" style={inputStyleDark} required />
+                    <input name="rib" type="number" placeholder="Ribbons" style={inputStyleDark} required />
+                    <input 
+                      name="data" 
+                      type="text" 
+                      placeholder="Data (DD/MM/AAAA)" 
+                      style={inputStyleDark} 
+                      onChange={handleDateChange}
+                      maxLength="10"
+                    />
+                    <button type="submit" style={btnAction}>Adicionar</button>
+                </form>
+            </div>
+
             <div style={cardStyle}>
               <h3>Histórico de Movimentações</h3>
               <table style={tableStyle}>
-                <thead><tr style={{textAlign:'left', color:'#94a3b8', borderBottom:'1px solid #333'}}><th style={tdStyle}>Data</th><th style={tdStyle}>Tipo</th><th style={tdStyle}>Etiq.</th><th style={tdStyle}>Rib.</th><th style={tdStyle}>Obs</th></tr></thead>
+                <thead>
+                  <tr style={{textAlign:'left', color:'#94a3b8', borderBottom:'1px solid #333'}}>
+                    <th style={tdStyle}>Data</th>
+                    <th style={tdStyle}>Tipo</th>
+                    <th style={tdStyle}>Etiq.</th>
+                    <th style={tdStyle}>Rib.</th>
+                    <th style={tdStyle}>Ações</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {stockData.logs?.map(log => (
-                    <tr key={log.id} style={{borderBottom:'1px solid #222'}}><td style={tdStyle}><small>{log.data}</small></td><td style={tdStyle}>{log.tipo}</td><td style={tdStyle}>{log.etiquetas_qtd}</td><td style={tdStyle}>{log.ribbons_qtd}</td><td style={tdStyle}><small>{log.obs}</small></td></tr>
+                    <tr key={log.id} style={{borderBottom:'1px solid #222'}}>
+                      <td style={tdStyle}><small>{log.data}</small></td>
+                      <td style={tdStyle}>{log.tipo}</td>
+                      <td style={tdStyle}>{log.etiquetas_qtd}</td>
+                      <td style={tdStyle}>{log.ribbons_qtd}</td>
+                      <td style={tdStyle}>
+                        <button onClick={async () => {
+                            const novoTipo = prompt("Novo tipo (Entrada/Saida):", log.tipo);
+                            const novaEtiq = prompt("Nova Qtd Etiquetas:", log.etiquetas_qtd);
+                            const novaRib = prompt("Nova Qtd Ribbons:", log.ribbons_qtd);
+                            if(novoTipo && novaEtiq && novaRib) {
+                                await axios.put(`${API}/stock/movements/${log.id}`, {
+                                    tipo: novoTipo,
+                                    etiquetas_qtd: parseInt(novaEtiq),
+                                    ribbons_qtd: parseInt(novaRib),
+                                    data: log.data,
+                                    obs: "Editado"
+                                });
+                                loadStock();
+                            }
+                        }} style={{background:'none', border:'none', cursor:'pointer'}}>
+                          <Edit3 size={18} color="#38bdf8"/>
+                        </button>
+                      </td>
+                    </tr>
                   ))}
                 </tbody>
               </table>
@@ -207,7 +269,7 @@ const chartData = [
   );
 }
 
-// ESTILOS - PRETO TOTAL
+// Estilos
 const bodyStyle = { display:'flex', width:'100vw', height:'100vh', background:'#000000', color:'#fff', overflow:'hidden' };
 const sidebarStyle = { width:'260px', background:'#0a0a0a', padding:'30px', display:'flex', flexDirection:'column', borderRight:'1px solid #222' };
 const logoStyle = { fontSize:'22px', fontWeight:'bold', marginBottom:'40px', color:'#38bdf8', display:'flex', alignItems:'center', gap:'10px' };

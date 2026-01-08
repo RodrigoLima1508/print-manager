@@ -15,34 +15,26 @@ app.use(express.json());
 
 let db;
 
-// --- INICIALIZAÇÃO DO BANCO E PING ---
 (async () => {
     db = await open({ filename: './database.db', driver: sqlite3.Database });
 
-    // Tabelas de Impressoras e Usuários
     await db.exec(`CREATE TABLE IF NOT EXISTS printers (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, ip TEXT UNIQUE, serial TEXT UNIQUE, status TEXT, location TEXT, online_status TEXT DEFAULT 'Pendente')`);
     await db.exec(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, printer_id INTEGER, content TEXT, date TEXT, FOREIGN KEY(printer_id) REFERENCES printers(id))`);
     await db.exec(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT)`);
-
-    // Tabelas de Estoque
     await db.exec(`CREATE TABLE IF NOT EXISTS estoque (id INTEGER PRIMARY KEY, etiquetas INTEGER, ribbons INTEGER)`);
     await db.exec(`CREATE TABLE IF NOT EXISTS movimentacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, etiquetas_qtd INTEGER, ribbons_qtd INTEGER, data TEXT, obs TEXT)`);
 
-    // Inicializa saldo e admin
     const sExists = await db.get('SELECT * FROM estoque WHERE id = 1');
     if (!sExists) await db.run('INSERT INTO estoque (id, etiquetas, ribbons) VALUES (1, 0, 0)');
 
-    // Força a atualização da senha do admin toda vez que o servidor inicia
-const hash = await bcrypt.hash('discra', 10);
-const adminExists = await db.get('SELECT * FROM users WHERE username = ?', ['admin']);
+    const hash = await bcrypt.hash('discra', 10);
+    const adminExists = await db.get('SELECT * FROM users WHERE username = ?', ['admin']);
+    if (!adminExists) {
+        await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
+    } else {
+        await db.run('UPDATE users SET password = ? WHERE username = ?', [hash, 'admin']);
+    }
 
-if (!adminExists) {
-    await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
-} else {
-    await db.run('UPDATE users SET password = ? WHERE username = ?', [hash, 'admin']);
-}
-
-    // Monitoramento de Rede (Ping)
     const updateNetworkStatus = async () => {
         const printers = await db.all('SELECT id, ip FROM printers');
         for (let p of printers) {
@@ -56,17 +48,14 @@ if (!adminExists) {
     setInterval(updateNetworkStatus, 30000);
 })();
 
+// --- ROTAS DE API ---
+
 app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
-    console.log("Tentativa de login:", username, password); // Isso vai aparecer nos logs!
-
-    // LOGIN DE EMERGÊNCIA: Se digitar admin e discra, entra direto
     if (username === 'admin' && password === 'discra') {
         const token = jwt.sign({ id: 99, user: 'admin' }, SECRET, { expiresIn: '8h' });
         return res.json({ token });
     }
-
-    // Se não for o de emergência, tenta o banco de dados
     const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
     if (user && await bcrypt.compare(password, user.password)) {
         const token = jwt.sign({ id: user.id, user: user.username }, SECRET, { expiresIn: '8h' });
@@ -99,39 +88,71 @@ app.get('/api/stock', async (req, res) => {
 
 app.post('/api/stock/import', async (req, res) => {
     const { movements } = req.body;
+    let importados = 0;
+    let ignorados = 0;
+
     try {
         for (const move of movements) {
             const tipo = move.tipo || 'Entrada';
             const e_qtd = parseInt(move.etiquetas) || 0;
             const r_qtd = parseInt(move.ribbons) || 0;
-            const data = move.data || new Date().toLocaleString('pt-BR');
-            
+            const data = move.data || new Date().toLocaleDateString('pt-BR');
+
+            // VERIFICA SE JÁ EXISTE IGUAL (Evita duplicar a mesma planilha)
+            const duplicado = await db.get(
+                'SELECT id FROM movimentacoes WHERE tipo = ? AND etiquetas_qtd = ? AND ribbons_qtd = ? AND data = ?',
+                [tipo, e_qtd, r_qtd, data]
+            );
+
+            if (duplicado) {
+                ignorados++;
+                continue; // Pula para a próxima linha
+            }
+
+            // Se não for duplicado, atualiza o estoque
             if (tipo.toLowerCase() === 'entrada') {
                 await db.run('UPDATE estoque SET etiquetas = etiquetas + ?, ribbons = ribbons + ? WHERE id = 1', [e_qtd, r_qtd]);
-            } else if (tipo.toLowerCase().includes('saida')) {
+            } else {
                 await db.run('UPDATE estoque SET etiquetas = etiquetas - ?, ribbons = ribbons - ? WHERE id = 1', [e_qtd, r_qtd]);
             }
-            await db.run('INSERT INTO movimentacoes (tipo, etiquetas_qtd, ribbons_qtd, data, obs) VALUES (?, ?, ?, ?, ?)', [tipo, e_qtd, r_qtd, data, "Importado"]);
+            
+            await db.run('INSERT INTO movimentacoes (tipo, etiquetas_qtd, ribbons_qtd, data, obs) VALUES (?, ?, ?, ?, ?)', 
+                [tipo, e_qtd, r_qtd, data, move.obs || "Importado"]);
+            importados++;
         }
-        res.status(200).send("Ok");
+        res.status(200).send(`Sucesso: ${importados} novos, ${ignorados} duplicados pulados.`);
+    } catch (e) { res.status(500).send(e.message); }
+});
+app.put('/api/stock/movements/:id', async (req, res) => {
+    const { id } = req.params;
+    const { tipo, etiquetas_qtd, ribbons_qtd, data, obs } = req.body;
+    try {
+        const antiga = await db.get('SELECT * FROM movimentacoes WHERE id = ?', [id]);
+        if (!antiga) return res.status(404).send("Não encontrado");
+
+        if (antiga.tipo.toLowerCase() === 'entrada') {
+            await db.run('UPDATE estoque SET etiquetas = etiquetas - ?, ribbons = ribbons - ? WHERE id = 1', [antiga.etiquetas_qtd, antiga.ribbons_qtd]);
+        } else {
+            await db.run('UPDATE estoque SET etiquetas = etiquetas + ?, ribbons = ribbons + ? WHERE id = 1', [antiga.etiquetas_qtd, antiga.ribbons_qtd]);
+        }
+
+        if (tipo.toLowerCase() === 'entrada') {
+            await db.run('UPDATE estoque SET etiquetas = etiquetas + ?, ribbons = ribbons + ? WHERE id = 1', [etiquetas_qtd, ribbons_qtd]);
+        } else {
+            await db.run('UPDATE estoque SET etiquetas = etiquetas - ?, ribbons = ribbons - ? WHERE id = 1', [etiquetas_qtd, ribbons_qtd]);
+        }
+
+        await db.run('UPDATE movimentacoes SET tipo = ?, etiquetas_qtd = ?, ribbons_qtd = ?, data = ?, obs = ? WHERE id = ?', [tipo, etiquetas_qtd, ribbons_qtd, data, obs, id]);
+        res.sendStatus(200);
     } catch (e) { res.status(500).send(e.message); }
 });
 
-// --- CONFIGURAÇÃO PARA O HUGGING FACE / PRODUÇÃO ---
-
-// 1. Serve arquivos estáticos (CSS, JS, Imagens)
+// --- CONFIGURAÇÃO PARA PRODUÇÃO ---
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
-
-// 2. Rota "Pega-Tudo" sem caracteres especiais (Compatível com Node 22)
 app.use((req, res, next) => {
-    // Se a URL começar com /api, ele ignora e passa para as rotas acima
-    if (req.url.startsWith('/api')) {
-        return next();
-    }
-    // Para qualquer outra rota, entrega o frontend
+    if (req.url.startsWith('/api')) return next();
     res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html'));
 });
 
-// Inicialização do Servidor
 const PORT = process.env.PORT || 7860;
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Online na porta ${PORT}`));
