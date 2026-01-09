@@ -6,9 +6,19 @@ const ping = require('ping');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const multer = require('multer');
+const xlsx = require('xlsx');
 
 const app = express();
+const upload = multer({ dest: 'uploads/' });
 const SECRET = "chave_secreta_empresa_123";
+
+// Função para converter data do Excel (número) para DD/MM/AAAA
+function excelDateToJS(serial) {
+    if (!serial || isNaN(serial)) return serial; 
+    const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
+    return date.toLocaleDateString('pt-BR');
+}
 
 app.use(cors());
 app.use(express.json());
@@ -21,19 +31,18 @@ let db;
     await db.exec(`CREATE TABLE IF NOT EXISTS printers (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, ip TEXT UNIQUE, serial TEXT UNIQUE, status TEXT, location TEXT, online_status TEXT DEFAULT 'Pendente')`);
     await db.exec(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, printer_id INTEGER, content TEXT, date TEXT, FOREIGN KEY(printer_id) REFERENCES printers(id))`);
     await db.exec(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT)`);
-    await db.exec(`CREATE TABLE IF NOT EXISTS estoque (id INTEGER PRIMARY KEY, etiquetas INTEGER, ribbons INTEGER)`);
-    await db.exec(`CREATE TABLE IF NOT EXISTS movimentacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, tipo TEXT, etiquetas_qtd INTEGER, ribbons_qtd INTEGER, data TEXT, obs TEXT)`);
+    await db.exec(`CREATE TABLE IF NOT EXISTS stock_history (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT, mes TEXT, tipo_movimentacao TEXT, etiqueta_entrada INTEGER, etiqueta_saida INTEGER, ribbon_entrada INTEGER, ribbon_saida INTEGER)`);
+    await db.exec(`CREATE TABLE IF NOT EXISTS stock_settings (item TEXT PRIMARY KEY, min_stock INTEGER)`);
 
-    const sExists = await db.get('SELECT * FROM estoque WHERE id = 1');
-    if (!sExists) await db.run('INSERT INTO estoque (id, etiquetas, ribbons) VALUES (1, 0, 0)');
+    const settingsExist = await db.get('SELECT * FROM stock_settings LIMIT 1');
+    if (!settingsExist) {
+        await db.run('INSERT INTO stock_settings (item, min_stock) VALUES (?, ?)', ['Etiquetas', 130]);
+        await db.run('INSERT INTO stock_settings (item, min_stock) VALUES (?, ?)', ['Ribbon', 20]);
+    }
 
     const hash = await bcrypt.hash('discra', 10);
     const adminExists = await db.get('SELECT * FROM users WHERE username = ?', ['admin']);
-    if (!adminExists) {
-        await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
-    } else {
-        await db.run('UPDATE users SET password = ? WHERE username = ?', [hash, 'admin']);
-    }
+    if (!adminExists) await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
 
     const updateNetworkStatus = async () => {
         const printers = await db.all('SELECT id, ip FROM printers');
@@ -47,8 +56,6 @@ let db;
     };
     setInterval(updateNetworkStatus, 30000);
 })();
-
-// --- ROTAS DE API ---
 
 app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
@@ -81,78 +88,55 @@ app.delete('/api/printers/:id', async (req, res) => {
 });
 
 app.get('/api/stock', async (req, res) => {
-    const stock = await db.get('SELECT * FROM estoque WHERE id = 1');
-    const logs = await db.all('SELECT * FROM movimentacoes ORDER BY id DESC LIMIT 20');
-    res.json({ stock, logs });
+    try {
+        const settings = await db.all('SELECT * FROM stock_settings');
+        const minLabels = settings.find(s => s.item === 'Etiquetas')?.min_stock || 130;
+        const minRibbons = settings.find(s => s.item === 'Ribbon')?.min_stock || 20;
+        const data = await db.get(`SELECT SUM(etiqueta_entrada) - SUM(etiqueta_saida) as labels, SUM(ribbon_entrada) - SUM(ribbon_saida) as ribbons FROM stock_history`);
+        const logs = await db.all('SELECT * FROM stock_history ORDER BY id DESC LIMIT 20');
+        res.json({
+            labels: { current: data.labels || 0, min: minLabels, percent: Math.round(((data.labels || 0) / minLabels) * 100) },
+            ribbons: { current: data.ribbons || 0, min: minRibbons, percent: Math.round(((data.ribbons || 0) / minRibbons) * 100) },
+            logs
+        });
+    } catch (e) { res.status(500).send(e.message); }
 });
 
-app.post('/api/stock/import', async (req, res) => {
-    const { movements } = req.body;
-    let importados = 0;
-    let ignorados = 0;
-
+app.post('/api/stock/import', upload.single('file'), async (req, res) => {
     try {
-        for (const move of movements) {
-            const tipo = move.tipo || 'Entrada';
-            const e_qtd = parseInt(move.etiquetas) || 0;
-            const r_qtd = parseInt(move.ribbons) || 0;
-            const data = move.data || new Date().toLocaleDateString('pt-BR');
+        let movements;
+        if (req.file) {
+            const workbook = xlsx.readFile(req.file.path);
+            const sheet = workbook.Sheets[workbook.SheetNames[0]];
+            movements = xlsx.utils.sheet_to_json(sheet, { range: 1 });
+        } else {
+            movements = req.body.movements;
+        }
 
-            // VERIFICA SE JÁ EXISTE IGUAL (Evita duplicar a mesma planilha)
-            const duplicado = await db.get(
-                'SELECT id FROM movimentacoes WHERE tipo = ? AND etiquetas_qtd = ? AND ribbons_qtd = ? AND data = ?',
-                [tipo, e_qtd, r_qtd, data]
+        for (const row of movements) {
+            // Pula linhas de cabeçalho ou totais da planilha
+            if (!row['DATA e HORA'] || row['DATA e HORA'] === 'TOTAL FINAL' || row['DATA e HORA'] === 'DATA e HORA') continue;
+
+            await db.run(`INSERT INTO stock_history (data_hora, mes, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    excelDateToJS(row['DATA e HORA']),
+                    row['MÊS'] || '',
+                    row['TIPO DE MOVIMENTAÇÃO'] || 'Manual',
+                    parseInt(row['ENTRADA']) || 0,
+                    parseInt(row['SAIDA']) || 0,
+                    parseInt(row['ENTRADA_1']) || 0,
+                    parseInt(row['SAIDA_1']) || 0
+                ]
             );
-
-            if (duplicado) {
-                ignorados++;
-                continue; // Pula para a próxima linha
-            }
-
-            // Se não for duplicado, atualiza o estoque
-            if (tipo.toLowerCase() === 'entrada') {
-                await db.run('UPDATE estoque SET etiquetas = etiquetas + ?, ribbons = ribbons + ? WHERE id = 1', [e_qtd, r_qtd]);
-            } else {
-                await db.run('UPDATE estoque SET etiquetas = etiquetas - ?, ribbons = ribbons - ? WHERE id = 1', [e_qtd, r_qtd]);
-            }
-            
-            await db.run('INSERT INTO movimentacoes (tipo, etiquetas_qtd, ribbons_qtd, data, obs) VALUES (?, ?, ?, ?, ?)', 
-                [tipo, e_qtd, r_qtd, data, move.obs || "Importado"]);
-            importados++;
         }
-        res.status(200).send(`Sucesso: ${importados} novos, ${ignorados} duplicados pulados.`);
-    } catch (e) { res.status(500).send(e.message); }
-});
-app.put('/api/stock/movements/:id', async (req, res) => {
-    const { id } = req.params;
-    const { tipo, etiquetas_qtd, ribbons_qtd, data, obs } = req.body;
-    try {
-        const antiga = await db.get('SELECT * FROM movimentacoes WHERE id = ?', [id]);
-        if (!antiga) return res.status(404).send("Não encontrado");
-
-        if (antiga.tipo.toLowerCase() === 'entrada') {
-            await db.run('UPDATE estoque SET etiquetas = etiquetas - ?, ribbons = ribbons - ? WHERE id = 1', [antiga.etiquetas_qtd, antiga.ribbons_qtd]);
-        } else {
-            await db.run('UPDATE estoque SET etiquetas = etiquetas + ?, ribbons = ribbons + ? WHERE id = 1', [antiga.etiquetas_qtd, antiga.ribbons_qtd]);
-        }
-
-        if (tipo.toLowerCase() === 'entrada') {
-            await db.run('UPDATE estoque SET etiquetas = etiquetas + ?, ribbons = ribbons + ? WHERE id = 1', [etiquetas_qtd, ribbons_qtd]);
-        } else {
-            await db.run('UPDATE estoque SET etiquetas = etiquetas - ?, ribbons = ribbons - ? WHERE id = 1', [etiquetas_qtd, ribbons_qtd]);
-        }
-
-        await db.run('UPDATE movimentacoes SET tipo = ?, etiquetas_qtd = ?, ribbons_qtd = ?, data = ?, obs = ? WHERE id = ?', [tipo, etiquetas_qtd, ribbons_qtd, data, obs, id]);
-        res.sendStatus(200);
+        res.json({ message: "Sucesso!" });
     } catch (e) { res.status(500).send(e.message); }
 });
 
-// --- CONFIGURAÇÃO PARA PRODUÇÃO ---
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
 app.use((req, res, next) => {
     if (req.url.startsWith('/api')) return next();
     res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html'));
 });
 
-const PORT = process.env.PORT || 7860;
-app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Online na porta ${PORT}`));
+app.listen(7860, '0.0.0.0', () => console.log(`🚀 Online na porta 7860`));
