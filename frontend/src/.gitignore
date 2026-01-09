@@ -1,4 +1,13 @@
+# Dependências
 node_modules/
+frontend/node_modules/
 dist/
-.env
+frontend/dist/
+
+# Banco de Dados e Uploads
 database.db
+uploads/
+
+# Docker e Logs
+*.log
+.DS_Store

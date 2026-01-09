@@ -2,12 +2,14 @@
   "dependencies": {
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
+    "claude": "^0.1.1",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.562.0",
     "multer": "^2.0.2",
     "ping": "^1.0.0",
+    "recharts": "^3.6.0",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7",
     "xlsx": "^0.18.5"

@@ -13,11 +13,16 @@ const app = express();
 const upload = multer({ dest: 'uploads/' });
 const SECRET = "chave_secreta_empresa_123";
 
-// Função para converter data do Excel (número) para DD/MM/AAAA
 function excelDateToJS(serial) {
-    if (!serial || isNaN(serial)) return serial; 
-    const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
-    return date.toLocaleDateString('pt-BR');
+    if (!serial) return "";
+    if (typeof serial === 'string' && serial.includes('/')) return serial;
+    if (typeof serial === 'number') {
+        if (serial < 1) return new Date().toLocaleDateString('pt-BR');
+        const date = new Date(Math.round((serial - 25569) * 86400 * 1000));
+        if (date.getFullYear() < 1990) return new Date().toLocaleDateString('pt-BR');
+        return date.toLocaleDateString('pt-BR');
+    }
+    return serial.toString();
 }
 
 app.use(cors());
@@ -25,14 +30,42 @@ app.use(express.json());
 
 let db;
 
+// Função para checar o status (Ping)
+async function checkPrinters() {
+    if (!db) return;
+    const printers = await db.all('SELECT id, ip FROM printers');
+    for (let p of printers) {
+        if (!p.ip || p.ip.trim() === "") {
+            await db.run('UPDATE printers SET online_status = ? WHERE id = ?', ['Disponível', p.id]);
+            continue;
+        }
+        try {
+            const res = await ping.promise.probe(p.ip, { timeout: 2 });
+            const status = res.alive ? (res.time > 150 ? 'Instável' : 'Online') : 'Offline';
+            await db.run('UPDATE printers SET online_status = ? WHERE id = ?', [status, p.id]);
+        } catch (err) {
+            console.error(`Erro ao pingar ${p.ip}:`, err);
+        }
+    }
+}
+
 (async () => {
     db = await open({ filename: './database.db', driver: sqlite3.Database });
-
-    await db.exec(`CREATE TABLE IF NOT EXISTS printers (id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, ip TEXT UNIQUE, serial TEXT UNIQUE, status TEXT, location TEXT, online_status TEXT DEFAULT 'Pendente')`);
-    await db.exec(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, printer_id INTEGER, content TEXT, date TEXT, FOREIGN KEY(printer_id) REFERENCES printers(id))`);
-    await db.exec(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT)`);
+    
+    await db.exec(`CREATE TABLE IF NOT EXISTS printers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, 
+        model TEXT, 
+        ip TEXT, 
+        serial TEXT, 
+        status TEXT, 
+        location TEXT, 
+        online_status TEXT DEFAULT 'Pendente',
+        obs TEXT
+    )`);
+    
     await db.exec(`CREATE TABLE IF NOT EXISTS stock_history (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT, mes TEXT, tipo_movimentacao TEXT, etiqueta_entrada INTEGER, etiqueta_saida INTEGER, ribbon_entrada INTEGER, ribbon_saida INTEGER)`);
     await db.exec(`CREATE TABLE IF NOT EXISTS stock_settings (item TEXT PRIMARY KEY, min_stock INTEGER)`);
+    await db.exec(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password TEXT)`);
 
     const settingsExist = await db.get('SELECT * FROM stock_settings LIMIT 1');
     if (!settingsExist) {
@@ -44,45 +77,35 @@ let db;
     const adminExists = await db.get('SELECT * FROM users WHERE username = ?', ['admin']);
     if (!adminExists) await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
 
-    const updateNetworkStatus = async () => {
-        const printers = await db.all('SELECT id, ip FROM printers');
-        for (let p of printers) {
-            try {
-                const res = await ping.promise.probe(p.ip, { timeout: 2 });
-                const status = res.alive ? (res.time > 150 ? 'Instável' : 'Online') : 'Offline';
-                await db.run('UPDATE printers SET online_status = ? WHERE id = ?', [status, p.id]);
-            } catch (err) { console.error("Erro ping:", p.ip); }
-        }
-    };
-    setInterval(updateNetworkStatus, 30000);
+    // Intervalo de PING a cada 10 segundos
+    setInterval(checkPrinters, 10000);
 })();
 
+// AUTH
 app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
     if (username === 'admin' && password === 'discra') {
         const token = jwt.sign({ id: 99, user: 'admin' }, SECRET, { expiresIn: '8h' });
         return res.json({ token });
     }
-    const user = await db.get('SELECT * FROM users WHERE username = ?', [username]);
-    if (user && await bcrypt.compare(password, user.password)) {
-        const token = jwt.sign({ id: user.id, user: user.username }, SECRET, { expiresIn: '8h' });
-        return res.json({ token });
-    }
     res.status(401).json({ error: "Inválido" });
 });
 
+// PRINTERS
 app.get('/api/printers', async (req, res) => res.json(await db.all('SELECT * FROM printers')));
 
 app.post('/api/printers', async (req, res) => {
-    const { model, ip, serial, status, location } = req.body;
-    try {
-        await db.run('INSERT INTO printers (model, ip, serial, status, location) VALUES (?, ?, ?, ?, ?)', [model, ip, serial, status, location]);
-        res.sendStatus(201);
-    } catch { res.status(400).send("Erro"); }
+    const { model, ip, serial, status, location, obs } = req.body;
+    await db.run(
+        'INSERT INTO printers (model, ip, serial, status, location, obs) VALUES (?, ?, ?, ?, ?, ?)', 
+        [model, ip, serial, status, location, obs || '']
+    );
+    // CHAMA O PING IMEDIATAMENTE APÓS CADASTRAR
+    checkPrinters(); 
+    res.sendStatus(201);
 });
 
 app.delete('/api/printers/:id', async (req, res) => {
-    await db.run('DELETE FROM logs WHERE printer_id = ?', [req.params.id]);
     await db.run('DELETE FROM printers WHERE id = ?', [req.params.id]);
     res.sendStatus(200);
 });
@@ -92,51 +115,46 @@ app.get('/api/stock', async (req, res) => {
         const settings = await db.all('SELECT * FROM stock_settings');
         const minLabels = settings.find(s => s.item === 'Etiquetas')?.min_stock || 130;
         const minRibbons = settings.find(s => s.item === 'Ribbon')?.min_stock || 20;
-        const data = await db.get(`SELECT SUM(etiqueta_entrada) - SUM(etiqueta_saida) as labels, SUM(ribbon_entrada) - SUM(ribbon_saida) as ribbons FROM stock_history`);
-        const logs = await db.all('SELECT * FROM stock_history ORDER BY id DESC LIMIT 20');
-        res.json({
-            labels: { current: data.labels || 0, min: minLabels, percent: Math.round(((data.labels || 0) / minLabels) * 100) },
-            ribbons: { current: data.ribbons || 0, min: minRibbons, percent: Math.round(((data.ribbons || 0) / minRibbons) * 100) },
-            logs
-        });
+        const data = await db.get(`SELECT (SUM(CAST(IFNULL(etiqueta_entrada, 0) AS INTEGER)) - SUM(CAST(IFNULL(etiqueta_saida, 0) AS INTEGER))) as labels, (SUM(CAST(IFNULL(ribbon_entrada, 0) AS INTEGER)) - SUM(CAST(IFNULL(ribbon_saida, 0) AS INTEGER))) as ribbons FROM stock_history WHERE etiqueta_entrada != 13455 AND tipo_movimentacao IS NOT NULL AND tipo_movimentacao != 'null'`);
+        const logs = await db.all(`SELECT * FROM stock_history WHERE etiqueta_entrada != 13455 AND tipo_movimentacao IS NOT NULL AND tipo_movimentacao != 'null' ORDER BY id DESC LIMIT 50`);
+        res.json({ labels: { current: data.labels || 0, min: minLabels, percent: Math.round(((data.labels || 0) / minLabels) * 100) }, ribbons: { current: data.ribbons || 0, min: minRibbons, percent: Math.round(((data.ribbons || 0) / minRibbons) * 100) }, logs: logs || [] });
     } catch (e) { res.status(500).send(e.message); }
 });
 
 app.post('/api/stock/import', upload.single('file'), async (req, res) => {
     try {
-        let movements;
-        if (req.file) {
-            const workbook = xlsx.readFile(req.file.path);
-            const sheet = workbook.Sheets[workbook.SheetNames[0]];
-            movements = xlsx.utils.sheet_to_json(sheet, { range: 1 });
-        } else {
-            movements = req.body.movements;
+        const workbook = xlsx.readFile(req.file.path);
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const data = xlsx.utils.sheet_to_json(sheet);
+        for (const row of data) {
+            const dataRaw = row['DATA']; if (!dataRaw || dataRaw === 'DATA') continue;
+            await db.run(`INSERT INTO stock_history (data_hora, mes, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida) VALUES (?,?,?,?,?,?,?)`, [excelDateToJS(dataRaw), row['MES'] || '', row['TIPO'] || 'Importado', parseInt(row['ETIQUETA_ENTRADA']) || 0, parseInt(row['ETIQUETA_SAIDA']) || 0, parseInt(row['RIBBON_ENTRADA']) || 0, parseInt(row['RIBBON_SAIDA']) || 0]);
         }
+        res.json({ message: "Sucesso" });
+    } catch (e) { res.status(500).send(e.message); }
+});
 
-        for (const row of movements) {
-            // Pula linhas de cabeçalho ou totais da planilha
-            if (!row['DATA e HORA'] || row['DATA e HORA'] === 'TOTAL FINAL' || row['DATA e HORA'] === 'DATA e HORA') continue;
+app.post('/api/stock/manual', async (req, res) => {
+    try {
+        const { data_hora, mes, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida } = req.body;
+        await db.run(`INSERT INTO stock_history (data_hora, mes, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida) VALUES (?,?,?,?,?,?,?)`, [data_hora, mes, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida]);
+        res.sendStatus(201);
+    } catch (e) { res.status(500).send(e.message); }
+});
 
-            await db.run(`INSERT INTO stock_history (data_hora, mes, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    excelDateToJS(row['DATA e HORA']),
-                    row['MÊS'] || '',
-                    row['TIPO DE MOVIMENTAÇÃO'] || 'Manual',
-                    parseInt(row['ENTRADA']) || 0,
-                    parseInt(row['SAIDA']) || 0,
-                    parseInt(row['ENTRADA_1']) || 0,
-                    parseInt(row['SAIDA_1']) || 0
-                ]
-            );
-        }
-        res.json({ message: "Sucesso!" });
+app.delete('/api/stock/logs/:id', async (req, res) => {
+    try { await db.run('DELETE FROM stock_history WHERE id = ?', [req.params.id]); res.sendStatus(200); } catch (e) { res.status(500).send(e.message); }
+});
+
+app.put('/api/stock/logs/:id', async (req, res) => {
+    try {
+        const { data_hora, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida } = req.body;
+        await db.run(`UPDATE stock_history SET data_hora = ?, tipo_movimentacao = ?, etiqueta_entrada = ?, etiqueta_saida = ?, ribbon_entrada = ?, ribbon_saida = ? WHERE id = ?`, [data_hora, tipo_movimentacao, etiqueta_entrada, etiqueta_saida, ribbon_entrada, ribbon_saida, req.params.id]);
+        res.sendStatus(200);
     } catch (e) { res.status(500).send(e.message); }
 });
 
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
-app.use((req, res, next) => {
-    if (req.url.startsWith('/api')) return next();
-    res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html'));
-});
+app.get(/^(?!\/api).+/, (req, res) => { res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html')); });
 
 app.listen(7860, '0.0.0.0', () => console.log(`🚀 Online na porta 7860`));

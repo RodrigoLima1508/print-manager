@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    container_name: print-manager-app
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./database.db:/app/database.db
+      - ./uploads:/app/uploads
+    restart: always
