@@ -16,13 +16,11 @@ const realizarBackup = () => {
     const dataAtual = new Date().toISOString().replace(/[:.]/g, '-');
     const diretorioBackup = path.join(__dirname, 'backups');
 
-    // Cria a pasta de backup se não existir
     if (!fs.existsSync(diretorioBackup)) fs.mkdirSync(diretorioBackup);
 
     const destino = path.join(diretorioBackup, `backup-${dataAtual}.db`);
 
     try {
-        // Copia o arquivo do banco de dados
         fs.copyFileSync('./database.db', destino);
         console.log(`✅ Backup gerado com sucesso: ${destino}`);
     } catch (err) {
@@ -30,10 +28,12 @@ const realizarBackup = () => {
     }
 };
 
-// Agenda para 12h30 todos os dias
 cron.schedule('30 12 * * *', () => {
     console.log('Executando backup agendado das 12h30...');
     realizarBackup();
+}, {
+    scheduled: true,
+    timezone: "America/Sao_Paulo"
 });
 
 // --- APP SETUP ---
@@ -58,7 +58,6 @@ app.use(express.json());
 
 let db;
 
-// Função para checar o status (Ping)
 async function checkPrinters() {
     if (!db) return;
     const printers = await db.all('SELECT id, ip FROM printers');
@@ -79,10 +78,8 @@ async function checkPrinters() {
 
 // --- DATABASE E INICIALIZAÇÃO ---
 (async () => {
-    // Abre a conexão com o banco
     db = await open({ filename: './database.db', driver: sqlite3.Database });
     
-    // Tenta realizar um backup logo na inicialização (caso o PC estivesse desligado no horário do Cron)
     realizarBackup();
 
     await db.exec(`CREATE TABLE IF NOT EXISTS printers (
@@ -94,6 +91,15 @@ async function checkPrinters() {
         location TEXT, 
         online_status TEXT DEFAULT 'Pendente',
         obs TEXT
+    )`);
+
+    // NOVA TABELA DE OCORRÊNCIAS
+    await db.exec(`CREATE TABLE IF NOT EXISTS printer_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        printer_id INTEGER,
+        date TEXT,
+        description TEXT,
+        FOREIGN KEY(printer_id) REFERENCES printers(id) ON DELETE CASCADE
     )`);
     
     await db.exec(`CREATE TABLE IF NOT EXISTS stock_history (id INTEGER PRIMARY KEY AUTOINCREMENT, data_hora TEXT, mes TEXT, tipo_movimentacao TEXT, etiqueta_entrada INTEGER, etiqueta_saida INTEGER, ribbon_entrada INTEGER, ribbon_saida INTEGER)`);
@@ -110,7 +116,6 @@ async function checkPrinters() {
     const adminExists = await db.get('SELECT * FROM users WHERE username = ?', ['admin']);
     if (!adminExists) await db.run('INSERT INTO users (username, password) VALUES (?, ?)', ['admin', hash]);
 
-    // Intervalo de PING a cada 10 segundos
     setInterval(checkPrinters, 10000);
 })();
 
@@ -139,8 +144,44 @@ app.post('/api/printers', async (req, res) => {
     res.sendStatus(201);
 });
 
+app.put('/api/printers/:id', async (req, res) => {
+    try {
+        const { model, ip, serial, status, location, obs } = req.body;
+        const { id } = req.params;
+        await db.run(
+            `UPDATE printers SET model = ?, ip = ?, serial = ?, status = ?, location = ?, obs = ? WHERE id = ?`,
+            [model, ip, serial, status, location, obs, id]
+        );
+        checkPrinters();
+        res.json({ message: "Impressora atualizada com sucesso!" });
+    } catch (e) { res.status(500).send(e.message); }
+});
+
 app.delete('/api/printers/:id', async (req, res) => {
     await db.run('DELETE FROM printers WHERE id = ?', [req.params.id]);
+    res.sendStatus(200);
+});
+
+// --- NOVAS ROTAS DE OCORRÊNCIAS ---
+app.get('/api/printers/:id/events', async (req, res) => {
+    const events = await db.all('SELECT * FROM printer_events WHERE printer_id = ? ORDER BY id DESC', [req.params.id]);
+    res.json(events);
+});
+
+app.post('/api/printers/:id/events', async (req, res) => {
+    const { date, description } = req.body;
+    await db.run('INSERT INTO printer_events (printer_id, date, description) VALUES (?, ?, ?)', [req.params.id, date, description]);
+    res.sendStatus(201);
+});
+
+app.put('/api/events/:id', async (req, res) => {
+    const { date, description } = req.body;
+    await db.run('UPDATE printer_events SET date = ?, description = ? WHERE id = ?', [date, description, req.params.id]);
+    res.sendStatus(200);
+});
+
+app.delete('/api/events/:id', async (req, res) => {
+    await db.run('DELETE FROM printer_events WHERE id = ?', [req.params.id]);
     res.sendStatus(200);
 });
 
@@ -189,7 +230,6 @@ app.put('/api/stock/logs/:id', async (req, res) => {
     } catch (e) { res.status(500).send(e.message); }
 });
 
-// SERVIR FRONTEND
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
 app.get(/^(?!\/api).+/, (req, res) => { res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html')); });
 

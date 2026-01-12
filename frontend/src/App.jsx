@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Printer as PrinterIcon, LayoutDashboard, LogOut, Activity, FileUp, Trash2, Edit3, X, Save, Info } from 'lucide-react';
+import { Printer as PrinterIcon, LayoutDashboard, LogOut, Activity, FileUp, Trash2, Edit3, X, Save, Info, ClipboardList, Plus } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 
 const API = `http://${window.location.hostname}:7860/api`;
@@ -14,6 +14,13 @@ function App() {
   const [form, setForm] = useState({ model: '', ip: '', serial: '', obs: '' });
   const [stockData, setStockData] = useState({ labels: {current:0, min:130, percent:0}, ribbons: {current:0, min:20, percent:0}, logs: [] });
   const [editingLog, setEditingLog] = useState(null);
+  const [editingPrinter, setEditingPrinter] = useState(null);
+  
+  // NOVOS ESTADOS PARA OCORRÊNCIAS
+  const [viewingEvents, setViewingEvents] = useState(null);
+  const [printerEvents, setPrinterEvents] = useState([]);
+  const [eventForm, setEventForm] = useState({ date: '', description: '' });
+  const [editingEvent, setEditingEvent] = useState(null);
 
   const loadPrinters = () => axios.get(`${API}/printers`).then(res => setPrinters(res.data)).catch(() => setPrinters([]));
   const loadStock = () => axios.get(`${API}/stock`).then(res => setStockData(res.data)).catch(() => {});
@@ -26,6 +33,43 @@ function App() {
       return () => clearInterval(interval);
     }
   }, [token]);
+
+  // MÁSCARA DE DATA AUTOMÁTICA (DD/MM/AAAA)
+  const handleDateMask = (value) => {
+    return value
+      .replace(/\D/g, '')
+      .replace(/(\d{2})(\d)/, '$1/$2')
+      .replace(/(\d{2})(\d)/, '$1/$2')
+      .replace(/(\d{4})(\d+?)$/, '$1');
+  };
+
+  const loadEvents = async (printerId) => {
+    try {
+      const res = await axios.get(`${API}/printers/${printerId}/events`);
+      setPrinterEvents(res.data);
+    } catch { alert("Erro ao carregar histórico"); }
+  };
+
+  const handleSaveEvent = async (e) => {
+    e.preventDefault();
+    try {
+      if (editingEvent) {
+        await axios.put(`${API}/events/${editingEvent.id}`, editingEvent);
+        setEditingEvent(null);
+      } else {
+        await axios.post(`${API}/printers/${viewingEvents.id}/events`, eventForm);
+        setEventForm({ date: '', description: '' });
+      }
+      loadEvents(viewingEvents.id);
+    } catch { alert("Erro ao salvar ocorrência"); }
+  };
+
+  const handleDeleteEvent = async (id) => {
+    if (window.confirm("Excluir esta ocorrência?")) {
+      await axios.delete(`${API}/events/${id}`);
+      loadEvents(viewingEvents.id);
+    }
+  };
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -54,6 +98,15 @@ function App() {
       setEditingLog(null);
       loadStock();
     } catch { alert("Erro ao salvar"); }
+  };
+
+  const handleSavePrinterEdit = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.put(`${API}/printers/${editingPrinter.id}`, editingPrinter);
+      setEditingPrinter(null);
+      loadPrinters();
+    } catch { alert("Erro ao editar impressora"); }
   };
 
   const handleLogin = async (e) => {
@@ -114,7 +167,6 @@ function App() {
             </div>
             
             <div style={{display: 'flex', gap: '20px', marginBottom: '20px', alignItems: 'stretch'}}>
-              {/* GRÁFICO DE DISPONIBILIDADE */}
               <div style={{...cardStyle, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: '250px'}}>
                 <div style={{width: '120px', height: '120px', position: 'relative'}}>
                   <ResponsiveContainer width="100%" height="100%">
@@ -149,7 +201,6 @@ function App() {
                 </div>
               </div>
 
-              {/* FORMULÁRIO DE ADIÇÃO */}
               <div style={{...cardStyle, flex: 2.5}}>
                 <form onSubmit={async (e) => {
                   e.preventDefault(); await axios.post(`${API}/printers`, form); loadPrinters();
@@ -176,12 +227,17 @@ function App() {
                       <h3 style={{margin: '0 0 4px 0', fontSize: '15px'}}>{p.model}</h3>
                       <p style={{margin: 0, fontSize: '11px', color: '#64748b'}}>{p.ip || 'DISPOSITIVO BACKUP'} • {p.serial || 'S/N'}</p>
                     </div>
-                    <button onClick={() => axios.delete(`${API}/printers/${p.id}`).then(loadPrinters)} style={btnGhost}><Trash2 size={16} color="#444"/></button>
+                    <div style={{display: 'flex', gap: '5px'}}>
+                      <button onClick={() => { setViewingEvents(p); loadEvents(p.id); }} style={btnGhost} title="Ocorrências"><ClipboardList size={16} color="#38bdf8"/></button>
+                      <button onClick={() => setEditingPrinter(p)} style={btnGhost}><Edit3 size={16} color="#94a3b8"/></button>
+                      <button onClick={() => axios.delete(`${API}/printers/${p.id}`).then(loadPrinters)} style={btnGhost}><Trash2 size={16} color="#ef4444"/></button>
+                    </div>
                   </div>
                   
                   {p.obs && (
                     <div style={{marginTop: '10px', fontSize: '11px', color: '#94a3b8', background: '#050505', padding: '6px', borderRadius: '4px', display:'flex', gap:'5px', alignItems:'center', border: '1px solid #111'}}>
-                      <Info size={12} color="#38bdf8"/> {p.obs}
+                      <div style={{ minWidth: '12px' }}><Info size={12} color="#38bdf8"/></div>
+                      <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.obs}</span>
                     </div>
                   )}
 
@@ -200,7 +256,6 @@ function App() {
             </div>
           </>
         ) : (
-          /* Seção de Estoque */
           <div style={{display:'flex', flexDirection:'column', gap:'20px'}}>
             <div style={headerStyle}>
               <h2>Estoque</h2>
@@ -229,7 +284,7 @@ function App() {
                 <select name="tipo" style={{...inputFlat, width: 'auto'}}><option>Entrada</option><option>Saída</option></select>
                 <input name="etiq" placeholder="Etiquetas" type="number" style={inputFlat}/>
                 <input name="rib" placeholder="Ribbons" type="number" style={inputFlat}/>
-                <input name="data" placeholder="DD/MM/AAAA" style={inputFlat} maxLength="10"/>
+                <input name="data" placeholder="DD/MM/AAAA" style={inputFlat} maxLength="10" onChange={(e) => e.target.value = handleDateMask(e.target.value)}/>
                 <button type="submit" style={btnAction}>Lançar</button>
               </form>
             </div>
@@ -263,27 +318,83 @@ function App() {
         )}
       </main>
 
-      {editingLog && (
+      {/* MODAL OCORRÊNCIAS (HISTÓRICO) */}
+      {viewingEvents && (
+        <div style={modalOverlay}>
+          <div style={{...modalContent, width: '600px'}}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px'}}>
+              <h3 style={{margin:0}}>Ocorrências: {viewingEvents.model}</h3>
+              <button onClick={() => { setViewingEvents(null); setEditingEvent(null); }} style={btnGhost}><X size={20}/></button>
+            </div>
+            
+            <form onSubmit={handleSaveEvent} style={{display:'flex', gap:'10px', marginBottom:'20px', alignItems:'flex-end'}}>
+              <div style={{width:'120px'}}>
+                <label style={miniLabel}>Data</label>
+                <input 
+                  value={editingEvent ? editingEvent.date : eventForm.date} 
+                  onChange={e => {
+                    const masked = handleDateMask(e.target.value);
+                    editingEvent ? setEditingEvent({...editingEvent, date: masked}) : setEventForm({...eventForm, date: masked})
+                  }} 
+                  placeholder="DD/MM/AAAA" 
+                  style={inputFlat}
+                />
+              </div>
+              <div style={{flex:1}}>
+                <label style={miniLabel}>Descrição</label>
+                <input 
+                  value={editingEvent ? editingEvent.description : eventForm.description} 
+                  onChange={e => editingEvent ? setEditingEvent({...editingEvent, description: e.target.value}) : setEventForm({...eventForm, description: e.target.value})} 
+                  placeholder="Ex: Troca de ribbon / Manutenção" 
+                  style={inputFlat}
+                />
+              </div>
+              <button type="submit" style={{...btnAction, background: editingEvent ? '#10b981' : '#2563eb'}}>
+                {editingEvent ? <Save size={18}/> : <Plus size={18}/>}
+              </button>
+            </form>
+
+            <div style={{maxHeight:'300px', overflowY:'auto', borderTop:'1px solid #111'}}>
+              {printerEvents.map(ev => (
+                <div key={ev.id} style={{display:'flex', justifyContent:'space-between', padding:'12px 0', borderBottom:'1px solid #111', fontSize:'13px'}}>
+                  <div style={{display:'flex', gap:'15px'}}>
+                    <span style={{color:'#38bdf8', fontWeight:'bold', minWidth:'80px'}}>{ev.date}</span>
+                    <span style={{color:'#94a3b8'}}>{ev.description}</span>
+                  </div>
+                  <div style={{display:'flex', gap:'10px'}}>
+                    <button onClick={() => setEditingEvent(ev)} style={btnGhost}><Edit3 size={14} color="#94a3b8"/></button>
+                    <button onClick={() => handleDeleteEvent(ev.id)} style={btnGhost}><Trash2 size={14} color="#ef4444"/></button>
+                  </div>
+                </div>
+              ))}
+              {printerEvents.length === 0 && <p style={{textAlign:'center', color:'#444', fontSize:'12px', marginTop:'20px'}}>Nenhuma ocorrência registrada.</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL EDIÇÃO DE IMPRESSORA */}
+      {editingPrinter && (
         <div style={modalOverlay}>
           <div style={modalContent}>
             <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px'}}>
-              <h3 style={{margin:0}}>Editar</h3>
-              <button onClick={() => setEditingLog(null)} style={btnGhost}><X size={20}/></button>
+              <h3 style={{margin:0}}>Editar Impressora</h3>
+              <button onClick={() => setEditingPrinter(null)} style={btnGhost}><X size={20}/></button>
             </div>
-            <form onSubmit={handleSaveEdit} style={{display:'flex', flexDirection:'column', gap:'15px'}}>
-              <div style={rowStyle}>
-                <div style={{flex:1}}><label style={miniLabel}>Data</label><input value={editingLog.data_hora} style={inputFlat} onChange={e => setEditingLog({...editingLog, data_hora: e.target.value})}/></div>
-                <div style={{flex:1}}><label style={miniLabel}>Tipo</label><select value={editingLog.tipo_movimentacao} style={inputFlat} onChange={e => setEditingLog({...editingLog, tipo_movimentacao: e.target.value})}><option>Entrada</option><option>Saída</option></select></div>
+            <form onSubmit={handleSavePrinterEdit} style={{display:'flex', flexDirection:'column', gap:'15px'}}>
+              <div>
+                <label style={miniLabel}>Modelo / Setor</label>
+                <input value={editingPrinter.model} style={{...inputFlat, width: '100%', boxSizing: 'border-box'}} onChange={e => setEditingPrinter({...editingPrinter, model: e.target.value})} required/>
               </div>
               <div style={rowStyle}>
-                <div style={{flex:1}}><label style={miniLabel}>Etiq. Ent.</label><input type="number" value={editingLog.etiqueta_entrada} style={inputFlat} onChange={e => setEditingLog({...editingLog, etiqueta_entrada: parseInt(e.target.value)||0})}/></div>
-                <div style={{flex:1}}><label style={miniLabel}>Etiq. Sai.</label><input type="number" value={editingLog.etiqueta_saida} style={inputFlat} onChange={e => setEditingLog({...editingLog, etiqueta_saida: parseInt(e.target.value)||0})}/></div>
+                <div style={{flex:1}}><label style={miniLabel}>IP</label><input value={editingPrinter.ip} style={inputFlat} onChange={e => setEditingPrinter({...editingPrinter, ip: e.target.value})}/></div>
+                <div style={{flex:1}}><label style={miniLabel}>Serial</label><input value={editingPrinter.serial} style={inputFlat} onChange={e => setEditingPrinter({...editingPrinter, serial: e.target.value})}/></div>
               </div>
-              <div style={rowStyle}>
-                <div style={{flex:1}}><label style={miniLabel}>Ribbon Ent.</label><input type="number" value={editingLog.ribbon_entrada} style={inputFlat} onChange={e => setEditingLog({...editingLog, ribbon_entrada: parseInt(e.target.value)||0})}/></div>
-                <div style={{flex:1}}><label style={miniLabel}>Ribbon Sai.</label><input type="number" value={editingLog.ribbon_saida} style={inputFlat} onChange={e => setEditingLog({...editingLog, ribbon_saida: parseInt(e.target.value)||0})}/></div>
+              <div>
+                <label style={miniLabel}>Observações</label>
+                <input value={editingPrinter.obs} style={{...inputFlat, width: '100%', boxSizing: 'border-box'}} onChange={e => setEditingPrinter({...editingPrinter, obs: e.target.value})}/>
               </div>
-              <button type="submit" style={btnPrimaryFull}><Save size={18} style={{marginRight:'8px'}}/> Salvar</button>
+              <button type="submit" style={btnPrimaryFull}><Save size={18} style={{marginRight:'8px'}}/> Salvar Alterações</button>
             </form>
           </div>
         </div>
@@ -301,14 +412,14 @@ const navItem = { display:'flex', alignItems:'center', gap:'10px', padding:'10px
 const navActive = { ...navItem, background:'#111', color:'#38bdf8' };
 const mainStyle = { flex:1, padding:'25px', overflowY:'auto' };
 const headerStyle = { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'15px' };
-const cardStyle = { background:'#080808', padding:'18px', borderRadius:'10px', border:'1px solid #111' };
+const cardStyle = { background:'#080808', padding:'18px', borderRadius:'10px', border:'1px solid #111', position: 'relative' };
 const topGridStyle = { display:'flex', gap:'15px' };
 const rowStyle = { display:'flex', gap:'10px', alignItems:'flex-end', width: '100%' };
-const inputFlat = { background:'#000', border:'1px solid #222', padding:'10px', borderRadius:'6px', color:'#fff', fontSize:'13px' };
+const inputFlat = { background:'#000', border:'1px solid #222', padding:'10px', borderRadius:'6px', color:'#fff', fontSize:'13px', width: '100%', boxSizing: 'border-box' };
 const miniLabel = { fontSize:'10px', color:'#444', textTransform:'uppercase', marginBottom:'5px', display:'block', fontWeight:'bold' };
 const btnAction = { background:'#2563eb', color:'#fff', border:'none', padding:'10px 20px', borderRadius:'6px', cursor:'pointer', fontWeight:'600', fontSize:'13px', whiteSpace: 'nowrap' };
 const btnPrimaryFull = { width:'100%', padding:'12px', background:'#2563eb', color:'#fff', border:'none', borderRadius:'6px', cursor:'pointer', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center' };
-const btnGhost = { background:'none', border:'none', cursor:'pointer', padding:'5px' };
+const btnGhost = { background:'none', border:'none', cursor:'pointer', padding:'5px', display: 'flex', alignItems: 'center', justifyContent: 'center' };
 const btnImport = { background:'#1e1b4b', color:'#38bdf8', padding:'8px 16px', borderRadius:'6px', cursor:'pointer', display:'flex', alignItems:'center', gap:'8px', fontSize:'13px', border:'1px solid #312e81' };
 const tableStyle = { width:'100%', borderCollapse:'collapse', fontSize:'13px' };
 const trStyle = { borderBottom:'1px solid #0f0f0f', height:'45px' };
