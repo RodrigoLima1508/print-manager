@@ -8,6 +8,7 @@
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.562.0",
     "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
     "ping": "^1.0.0",
     "recharts": "^3.6.0",
     "sqlite": "^5.1.1",

@@ -8,7 +8,35 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const multer = require('multer');
 const xlsx = require('xlsx');
+const fs = require('fs');
+const cron = require('node-cron');
 
+// --- CONFIGURAÇÃO DE BACKUP ---
+const realizarBackup = () => {
+    const dataAtual = new Date().toISOString().replace(/[:.]/g, '-');
+    const diretorioBackup = path.join(__dirname, 'backups');
+
+    // Cria a pasta de backup se não existir
+    if (!fs.existsSync(diretorioBackup)) fs.mkdirSync(diretorioBackup);
+
+    const destino = path.join(diretorioBackup, `backup-${dataAtual}.db`);
+
+    try {
+        // Copia o arquivo do banco de dados
+        fs.copyFileSync('./database.db', destino);
+        console.log(`✅ Backup gerado com sucesso: ${destino}`);
+    } catch (err) {
+        console.error('❌ Erro ao realizar backup:', err);
+    }
+};
+
+// Agenda para 12h30 todos os dias
+cron.schedule('30 12 * * *', () => {
+    console.log('Executando backup agendado das 12h30...');
+    realizarBackup();
+});
+
+// --- APP SETUP ---
 const app = express();
 const upload = multer({ dest: 'uploads/' });
 const SECRET = "chave_secreta_empresa_123";
@@ -49,9 +77,14 @@ async function checkPrinters() {
     }
 }
 
+// --- DATABASE E INICIALIZAÇÃO ---
 (async () => {
+    // Abre a conexão com o banco
     db = await open({ filename: './database.db', driver: sqlite3.Database });
     
+    // Tenta realizar um backup logo na inicialização (caso o PC estivesse desligado no horário do Cron)
+    realizarBackup();
+
     await db.exec(`CREATE TABLE IF NOT EXISTS printers (
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
         model TEXT, 
@@ -81,6 +114,8 @@ async function checkPrinters() {
     setInterval(checkPrinters, 10000);
 })();
 
+// --- ROTAS API ---
+
 // AUTH
 app.post('/api/login', async (req, res) => {
     const { username, password } = req.body;
@@ -100,7 +135,6 @@ app.post('/api/printers', async (req, res) => {
         'INSERT INTO printers (model, ip, serial, status, location, obs) VALUES (?, ?, ?, ?, ?, ?)', 
         [model, ip, serial, status, location, obs || '']
     );
-    // CHAMA O PING IMEDIATAMENTE APÓS CADASTRAR
     checkPrinters(); 
     res.sendStatus(201);
 });
@@ -110,6 +144,7 @@ app.delete('/api/printers/:id', async (req, res) => {
     res.sendStatus(200);
 });
 
+// STOCK
 app.get('/api/stock', async (req, res) => {
     try {
         const settings = await db.all('SELECT * FROM stock_settings');
@@ -154,7 +189,8 @@ app.put('/api/stock/logs/:id', async (req, res) => {
     } catch (e) { res.status(500).send(e.message); }
 });
 
+// SERVIR FRONTEND
 app.use(express.static(path.join(__dirname, 'frontend/dist')));
 app.get(/^(?!\/api).+/, (req, res) => { res.sendFile(path.join(__dirname, 'frontend/dist', 'index.html')); });
 
-app.listen(7860, '0.0.0.0', () => console.log(`🚀 Online na porta 7860`));
+app.listen(7860, '0.0.0.0', () => console.log(`🚀 Serviço online na porta 7860`));

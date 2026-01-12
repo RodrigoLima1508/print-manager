@@ -7,4 +7,5 @@ services:
     volumes:
       - ./database.db:/app/database.db
       - ./uploads:/app/uploads
+      - ./backups:/app/backups
     restart: always
